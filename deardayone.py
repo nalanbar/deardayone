@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ from pathlib import Path
 
 # Default paths
 REMARKABLE_DATA_DIR = Path.home() / "Library/Containers/com.remarkable.desktop/Data/Library/Application Support/remarkable/desktop"
+DAYONE_DB = Path.home() / "Library/Group Containers/5U8NS4GX82.dayoneapp2/Data/Documents/DayOne.sqlite"
 CONFIG_DIR = Path.home() / ".config/deardayone"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 RMC_BIN = Path.home() / ".local/bin/rmc"
@@ -197,6 +199,23 @@ def create_dayone_entry(journal, date_str, tags, attachment_path, body_text):
     return result.stdout.strip()
 
 
+def list_dayone_journals():
+    """Read journal names from the Day One SQLite database.
+
+    Returns a sorted list of unique journal name strings.
+    """
+    if not DAYONE_DB.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{DAYONE_DB}?mode=ro", uri=True)
+        cursor = conn.execute("SELECT ZNAME FROM ZJOURNAL ORDER BY ZNAME")
+        journals = sorted(set(row[0] for row in cursor if row[0]))
+        conn.close()
+        return journals
+    except sqlite3.Error:
+        return []
+
+
 def run_setup(data_dir):
     """Interactive setup: pick a notebook and Day One journal."""
     print("Scanning reMarkable notebooks...\n")
@@ -230,17 +249,39 @@ def run_setup(data_dir):
     selected = notebooks[idx]
     print(f"\nSelected: {selected['name']}")
 
-    # Ask for Day One journal name
-    print()
-    default_journal = "Journal"
-    try:
-        journal = input(f"Day One journal name [{default_journal}]: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print("\nSetup cancelled.")
-        sys.exit(0)
+    # Pick Day One journal
+    journals = list_dayone_journals()
 
-    if not journal:
-        journal = default_journal
+    if journals:
+        print(f"\nDay One journals:\n")
+        for i, j in enumerate(journals, 1):
+            print(f"  {i:3d}. {j}")
+
+        print()
+        while True:
+            try:
+                choice = input("Select journal number: ").strip()
+                jdx = int(choice) - 1
+                if 0 <= jdx < len(journals):
+                    break
+                print(f"  Please enter a number between 1 and {len(journals)}")
+            except ValueError:
+                print("  Please enter a valid number")
+            except (EOFError, KeyboardInterrupt):
+                print("\nSetup cancelled.")
+                sys.exit(0)
+
+        journal = journals[jdx]
+    else:
+        print("\nCould not read Day One journals from database.")
+        default_journal = "Journal"
+        try:
+            journal = input(f"Day One journal name [{default_journal}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nSetup cancelled.")
+            sys.exit(0)
+        if not journal:
+            journal = default_journal
 
     # Load existing config to preserve exported_pages if same notebook
     existing = load_config()
