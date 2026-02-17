@@ -17,6 +17,7 @@ DAYONE_DB = Path.home() / "Library/Group Containers/5U8NS4GX82.dayoneapp2/Data/D
 CONFIG_DIR = Path.home() / ".config/deardayone"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 RMC_BIN = Path.home() / ".local/bin/rmc"
+INKSCAPE_BIN = "/opt/homebrew/bin/inkscape"
 DAYONE_BIN = "/usr/local/bin/dayone"
 
 
@@ -153,20 +154,41 @@ def get_page_list(data_dir, guid):
     return result
 
 
-def convert_rm_to_pdf(rm_path, output_path):
-    """Convert a .rm file to PDF using rmc."""
+def convert_rm_to_png(rm_path, output_path):
+    """Convert a .rm file to PNG using rmc (for SVG) and Inkscape (for PNG).
+
+    Pipeline: .rm → SVG (via rmc) → PNG (via Inkscape)
+    """
+    svg_path = str(output_path).rsplit(".", 1)[0] + ".svg"
+
+    # Step 1: .rm → SVG
     result = subprocess.run(
-        [str(RMC_BIN), "-t", "pdf", str(rm_path), "-o", str(output_path)],
+        [str(RMC_BIN), "-t", "svg", str(rm_path), "-o", svg_path],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        # Extract just the last line of the traceback for a cleaner error
         stderr = result.stderr.strip()
         lines = stderr.splitlines()
-        # Find the actual error (last non-empty line)
         error_line = lines[-1] if lines else "unknown error"
         raise RuntimeError(f"rmc conversion failed: {error_line}")
+
+    # Step 2: SVG → PNG
+    result = subprocess.run(
+        [INKSCAPE_BIN, "--export-type=png",
+         f"--export-filename={output_path}", svg_path],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"inkscape conversion failed: {result.stderr.strip()}")
+
+    # Clean up intermediate SVG
+    try:
+        os.remove(svg_path)
+    except OSError:
+        pass
+
     return output_path
 
 
@@ -377,18 +399,18 @@ def run_export(data_dir, dry_run=False):
         for i, page_id, rm_file, page_date in to_export:
             page_num = i + 1
             date_str = page_date.strftime("%Y-%m-%d %H:%M:%S")
-            pdf_path = Path(tmp_dir) / f"{page_id}.pdf"
+            png_path = Path(tmp_dir) / f"{page_id}.png"
 
             print(f"  Page {page_num}/{len(page_infos)}: ", end="", flush=True)
 
             try:
-                # Convert .rm to PDF
-                convert_rm_to_pdf(rm_file, pdf_path)
+                # Convert .rm to PNG
+                convert_rm_to_png(rm_file, png_path)
 
                 # Create Day One entry
                 body = f"Page {page_num} of {notebook_name}"
                 tags = ["reMarkable", notebook_name]
-                create_dayone_entry(journal, date_str, tags, pdf_path, body)
+                create_dayone_entry(journal, date_str, tags, png_path, body)
 
                 # Track as exported (save immediately for crash safety)
                 exported.add(page_id)
