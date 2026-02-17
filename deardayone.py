@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -13,7 +14,9 @@ from pathlib import Path
 
 # Default paths
 REMARKABLE_DATA_DIR = Path.home() / "Library/Containers/com.remarkable.desktop/Data/Library/Application Support/remarkable/desktop"
-DAYONE_DB = Path.home() / "Library/Group Containers/5U8NS4GX82.dayoneapp2/Data/Documents/DayOne.sqlite"
+DAYONE_DATA = Path.home() / "Library/Group Containers/5U8NS4GX82.dayoneapp2/Data/Documents"
+DAYONE_DB = DAYONE_DATA / "DayOne.sqlite"
+DAYONE_PENDING_MEDIA = DAYONE_DATA / "PendingMedia"
 CONFIG_DIR = Path.home() / ".config/deardayone"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 RMC_BIN = Path.home() / ".local/bin/rmc"
@@ -198,6 +201,10 @@ def create_dayone_entry(journal, date_str, tags, attachment_path, body_text):
     Note: dayone's --attachments flag consumes all following arguments until
     it hits '--' or another option, so we place it last and add '--' before
     the 'new' command.
+
+    The dayone CLI has a sandbox bug where it can't copy media files into its
+    PendingMedia folder. We work around this by looking up the attachment UUID
+    it assigned in the database and copying the file there ourselves.
     """
     # Build command with careful argument ordering.
     # dayone's --tags and --attachments are greedy (consume all following args
@@ -218,7 +225,43 @@ def create_dayone_entry(journal, date_str, tags, attachment_path, body_text):
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"dayone failed: {result.stderr.strip()}")
+
+    # Work around dayone CLI sandbox bug: it creates the attachment DB record
+    # but can't copy the file to PendingMedia. We do the copy ourselves.
+    if attachment_path and DAYONE_DB.exists():
+        _fix_pending_attachment(attachment_path)
+
     return result.stdout.strip()
+
+
+def _fix_pending_attachment(original_path):
+    """Copy an attachment file into Day One's PendingMedia folder.
+
+    Looks up the most recent attachment record matching the filename to get
+    the UUID, then copies the file with that UUID as the filename.
+    """
+    original_name = Path(original_path).name
+    ext = Path(original_path).suffix  # e.g. ".png"
+
+    try:
+        conn = sqlite3.connect(f"file:{DAYONE_DB}?mode=ro", uri=True)
+        cursor = conn.execute(
+            "SELECT ZIDENTIFIER FROM ZATTACHMENT WHERE ZFILENAME = ? ORDER BY Z_PK DESC LIMIT 1",
+            (original_name,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+    except sqlite3.Error:
+        return
+
+    if not row or not row[0]:
+        return
+
+    attachment_uuid = row[0]
+    dest = DAYONE_PENDING_MEDIA / f"{attachment_uuid}{ext}"
+
+    DAYONE_PENDING_MEDIA.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(original_path), str(dest))
 
 
 def list_dayone_journals():
